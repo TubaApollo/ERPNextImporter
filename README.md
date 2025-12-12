@@ -1,6 +1,6 @@
 # ERPNext Produkt-Importer v2 🚀
 
-Ein mächtiges Import-Tool für ERPNext im Stil von JTL-Ameise.
+Ein mächtiges Import-Tool für ERPNext.
 
 ## ✨ Features
 
@@ -11,7 +11,7 @@ Ein mächtiges Import-Tool für ERPNext im Stil von JTL-Ameise.
 - **Dry-Run Modus** zum Testen
 
 ### 🗺️ Flexibles Feld-Mapping
-- **Auto-Mapping**: Erkennt JTL-Spalten automatisch
+- **Auto-Mapping**: Erkennt Spalten automatisch
 - Transformationen: Trim, Uppercase, Lowercase, Number, Boolean, HTML-Strip
 - Standardwerte für leere Felder
 - Vorlagen speichern & laden
@@ -75,9 +75,9 @@ python main.py
 
 ## 🔄 Auto-Mapping
 
-Folgende JTL-Spalten werden automatisch erkannt:
+Folgende Spalten werden automatisch erkannt:
 
-| JTL-Spalte | ERPNext-Feld |
+| Spalte | ERPNext-Feld |
 |------------|--------------|
 | Artikelnummer | item_code |
 | Artikelname | item_name |
@@ -147,5 +147,4 @@ pip install requests
 - item_code muss zugeordnet sein
 - Bei Kategorien: item_group_name
 
----
-Erstellt mit ❤️ für Kreckler GmbH
+
