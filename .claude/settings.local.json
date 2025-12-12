@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(py:*)",
+      "WebSearch",
+      "WebFetch(domain:ai.google.dev)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
