@@ -48,7 +48,7 @@ python main.py
   "base_url": "https://erp.kreckler.shop",
   "api_key": "DEIN_API_KEY",
   "api_secret": "DEIN_API_SECRET",
-  "company": "Kreckler GmbH",
+  "company": "company",
   "default_warehouse": "Lager - KG",
   "default_price_list": "Standard-Verkauf",
   "default_item_group": "Alle Artikelgruppen"
