@@ -139,10 +139,6 @@ pip install requests
 - API Key/Secret korrekt?
 - Benutzer hat API-Berechtigung?
 
-### Encoding-Probleme
-- Probiere "UTF-8 (BOM)" für JTL-Exporte
-- Oder "Windows-1252" für ältere Dateien
-
 ### "Pflichtfelder fehlen"
 - item_code muss zugeordnet sein
 - Bei Kategorien: item_group_name
