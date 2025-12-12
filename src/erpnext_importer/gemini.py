@@ -176,13 +176,29 @@ Antworte NUR mit dem JSON-Objekt, nichts anderes."""
 
         # Parse JSON aus Antwort
         try:
-            # Bereinige Antwort (manchmal kommt Markdown)
+            # Bereinige Antwort (manchmal kommt Markdown-Codeblock)
             result = result.strip()
+            
+            # Entferne Markdown-Codeblock wenn vorhanden
             if result.startswith("```"):
+                # Finde Ende des Codeblocks
                 lines = result.split("\n")
-                result = "\n".join(lines[1:-1])
-            if result.startswith("json"):
-                result = result[4:]
+                # Erste Zeile ist ```json oder ```, letzte ist ```
+                start_idx = 1
+                end_idx = len(lines)
+                
+                # Suche nach schließendem ```
+                for i in range(len(lines) - 1, 0, -1):
+                    if lines[i].strip() == "```":
+                        end_idx = i
+                        break
+                
+                result = "\n".join(lines[start_idx:end_idx])
+            
+            # Entferne "json" Präfix wenn vorhanden
+            result = result.strip()
+            if result.lower().startswith("json"):
+                result = result[4:].strip()
 
             mapping = json.loads(result.strip())
 

@@ -131,11 +131,20 @@ def is_valid_barcode(barcode: str) -> bool:
     if len(barcode) < 8:
         return False
     
-    # Bekannte ungültige Barcodes
-    if barcode in ("0", "00000000", "4017980000000"):
+    # Bekannte ungültige Barcodes (Platzhalter/Test-Barcodes)
+    if barcode in INVALID_BARCODES:
         return False
     
     return True
+
+
+# Bekannte ungültige/Test-Barcodes (können erweitert werden)
+INVALID_BARCODES = frozenset([
+    "0",
+    "00000000",
+    "0000000000000",
+    "4017980000000",  # Häufiger Platzhalter-Barcode
+])
 
 
 def detect_barcode_type(barcode: str) -> str:

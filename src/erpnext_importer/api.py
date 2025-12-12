@@ -11,6 +11,7 @@ from typing import Optional, Dict, List, Tuple, Any
 
 from .config import ERPNextConfig
 from .fields import ERPNEXT_ITEM_FIELDS, UOM_MAPPING
+from .utils import is_valid_barcode, detect_barcode_type
 
 logger = logging.getLogger(__name__)
 
@@ -325,10 +326,10 @@ class ERPNextAPI:
             
             if "gtin" in data and data["gtin"]:
                 gtin = data.pop("gtin")
-                if gtin and gtin != "4017980000000":
+                if gtin and is_valid_barcode(str(gtin)):
                     data["barcodes"] = [{
                         "barcode": gtin,
-                        "barcode_type": "EAN" if len(str(gtin)) == 13 else "UPC-A"
+                        "barcode_type": detect_barcode_type(str(gtin))
                     }]
             
             result = self._make_request("POST", "Item", data)

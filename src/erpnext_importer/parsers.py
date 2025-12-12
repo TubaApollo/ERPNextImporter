@@ -29,11 +29,27 @@ class CSVParser:
         Returns:
             Tuple von (Daten als Liste von Dicts, Spaltennamen)
         """
+        replaced_chars = 0
+        
+        def count_replacements(exc):
+            nonlocal replaced_chars
+            replaced_chars += 1
+            return ('?', exc.end)
+        
         try:
-            with open(file_path, 'r', encoding=self.encoding, errors='replace') as f:
-                reader = csv.DictReader(f, delimiter=self.delimiter)
-                self.columns = reader.fieldnames or []
-                self.data = list(reader)
+            # Versuche zuerst mit strict encoding
+            try:
+                with open(file_path, 'r', encoding=self.encoding, errors='strict') as f:
+                    reader = csv.DictReader(f, delimiter=self.delimiter)
+                    self.columns = reader.fieldnames or []
+                    self.data = list(reader)
+            except UnicodeDecodeError:
+                # Fallback: Ersetze ungültige Zeichen und logge Warnung
+                logger.warning(f"Encoding-Fehler in {file_path}, verwende Ersetzungsmodus")
+                with open(file_path, 'r', encoding=self.encoding, errors='replace') as f:
+                    reader = csv.DictReader(f, delimiter=self.delimiter)
+                    self.columns = reader.fieldnames or []
+                    self.data = list(reader)
             
             logger.info(f"CSV geparst: {len(self.data)} Zeilen, {len(self.columns)} Spalten")
             return self.data, self.columns
