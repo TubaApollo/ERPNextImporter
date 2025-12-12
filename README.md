@@ -190,14 +190,51 @@ Das erste Bild (sortiert) wird als Hauptbild gesetzt.
 
 ## 📁 Projektstruktur
 
+Das Projekt ist **modular aufgebaut** für bessere Wartbarkeit:
+
 ```
-erpnext_importer_v2/
-├── main.py              # Hauptanwendung
-├── requirements.txt     # Python-Dependencies
-├── start.bat           # Windows-Starter
-├── erpnext_config.json # API-Konfiguration
-├── templates/          # Gespeicherte Vorlagen
-└── logs/              # Export-Logs
+ERPNextImporter/
+├── main.py                          # Hauptanwendung (UI + Logik)
+├── requirements.txt                 # Python-Dependencies
+├── start.bat                        # Windows-Starter
+├── erpnext_config.json             # API-Konfiguration (wird erstellt)
+├── templates/                       # Gespeicherte Vorlagen
+├── logs/                            # Export-Logs
+└── src/
+    └── erpnext_importer/            # Modulare Kern-Bibliothek
+        ├── __init__.py              # Package-Export
+        ├── config.py                # Konfiguration & Datenmodelle
+        ├── api.py                   # ERPNext REST API Client
+        ├── gemini.py                # Google Gemini AI Client
+        ├── parsers.py               # CSV/BMECat Parser
+        ├── fields.py                # Feld-Definitionen & Mapping-Regeln
+        ├── utils.py                 # Hilfsfunktionen
+        └── ui/                      # UI-Komponenten (optional)
+            └── __init__.py
+```
+
+### Module verwenden
+
+Die Module können auch standalone verwendet werden:
+
+```python
+from src.erpnext_importer import ERPNextConfig, ERPNextAPI
+
+# Konfiguration laden
+config = ERPNextConfig(
+    base_url="https://erp.example.com",
+    api_key="your-key",
+    api_secret="your-secret"
+)
+
+# API verwenden
+api = ERPNextAPI(config)
+success, msg = api.test_connection()
+print(msg)
+
+# Custom Fields laden
+custom_fields = api.get_custom_fields("Item")
+print(f"Gefunden: {len(custom_fields)} Custom Fields")
 ```
 
 ## 🐛 Troubleshooting

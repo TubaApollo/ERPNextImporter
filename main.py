@@ -1,12 +1,25 @@
 #!/usr/bin/env python3
 """
-ERPNext Produkt-Importer (JTL-Ameise Style) v2
-==============================================
+ERPNext Produkt-Importer (JTL-Ameise Style) v2.1
+================================================
 Vollständige Flet-GUI für ERPNext Produktimport und -export.
+
+HINWEIS: Dieses Projekt wurde modular aufgebaut!
+Die Kern-Komponenten befinden sich jetzt in:
+  - src/erpnext_importer/config.py    - Konfiguration und Datenmodelle
+  - src/erpnext_importer/api.py       - ERPNext API Client
+  - src/erpnext_importer/gemini.py    - Gemini AI Client
+  - src/erpnext_importer/parsers.py   - CSV/BMECat Parser
+  - src/erpnext_importer/fields.py    - Feld-Definitionen und Mapping
+  - src/erpnext_importer/utils.py     - Hilfsfunktionen
+
+Diese Datei (main.py) enthält die vollständige UI-Anwendung.
 
 Features:
 - CSV und BMECat XML Import
 - Flexibles Feld-Mapping mit Auto-Zuordnung
+- AI Smart-Mapping mit Google Gemini
+- Custom Fields Support (automatisch von ERPNext laden)
 - Vorlagen speichern/laden
 - Dry Run Modus
 - Bilder hochladen/aktualisieren/löschen
@@ -797,6 +810,82 @@ class ERPNextAPIError(Exception):
         return " | ".join(parts)
 
 
+def parse_number(value: Any, allow_empty: bool = True) -> Optional[float]:
+    """
+    Parst einen Wert zu einer Zahl (float).
+    Unterstützt deutsche Zahlenformate (Komma als Dezimaltrennzeichen).
+    
+    Args:
+        value: Der zu parsende Wert
+        allow_empty: Wenn True, gibt None für leere Werte zurück
+        
+    Returns:
+        float oder None
+    """
+    if value is None or value == "":
+        return None if allow_empty else 0.0
+    
+    try:
+        # Bereits eine Zahl
+        if isinstance(value, (int, float)):
+            return float(value)
+        
+        # String-Verarbeitung
+        str_val = str(value).strip()
+        if not str_val:
+            return None if allow_empty else 0.0
+        
+        # Entferne Tausender-Trennzeichen (Punkt oder Leerzeichen)
+        # und ersetze Komma durch Punkt für Dezimal
+        str_val = str_val.replace(" ", "")
+        
+        # Deutsche Notation: 1.234,56 -> 1234.56
+        if "," in str_val and "." in str_val:
+            # Punkt ist Tausender-Trennzeichen
+            str_val = str_val.replace(".", "").replace(",", ".")
+        elif "," in str_val:
+            # Nur Komma -> Dezimaltrennzeichen
+            str_val = str_val.replace(",", ".")
+        
+        return float(str_val)
+    except (ValueError, TypeError):
+        return None if allow_empty else 0.0
+
+
+def brutto_to_netto(brutto: float, tax_rate: float = 19.0) -> float:
+    """
+    Konvertiert Brutto zu Netto mit gegebenem Steuersatz.
+    
+    Args:
+        brutto: Brutto-Betrag
+        tax_rate: Steuersatz in Prozent (Standard: 19.0)
+        
+    Returns:
+        Netto-Betrag (gerundet auf 2 Dezimalstellen)
+    """
+    if brutto is None or brutto == 0:
+        return 0.0
+    tax_divisor = 1 + (tax_rate / 100)
+    return round(brutto / tax_divisor, 2)
+
+
+def netto_to_brutto(netto: float, tax_rate: float = 19.0) -> float:
+    """
+    Konvertiert Netto zu Brutto mit gegebenem Steuersatz.
+    
+    Args:
+        netto: Netto-Betrag
+        tax_rate: Steuersatz in Prozent (Standard: 19.0)
+        
+    Returns:
+        Brutto-Betrag (gerundet auf 2 Dezimalstellen)
+    """
+    if netto is None or netto == 0:
+        return 0.0
+    tax_multiplier = 1 + (tax_rate / 100)
+    return round(netto * tax_multiplier, 2)
+
+
 class ERPNextAPI:
     """ERPNext REST API Client - Vollständige Implementation mit verbesserter Fehlerbehandlung"""
     
@@ -818,7 +907,7 @@ class ERPNextAPI:
             total=self.config.max_retries,
             backoff_factor=1,
             status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"]
+            allowed_methods=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "POST"]
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         session.mount("http://", adapter)
