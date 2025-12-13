@@ -3036,13 +3036,13 @@ class ERPNextImporterApp:
         self.setting_url = TextField(
             label="ERPNext URL",
             hint_text="https://erp.example.com",
-            value=self.config.base_url,
+            value=self.config.base_url or "",
             width=400
         )
         
         self.setting_api_key = TextField(
             label="API Key",
-            value=self.config.api_key,
+            value=self.config.api_key or "",
             width=400
         )
         
@@ -3050,31 +3050,31 @@ class ERPNextImporterApp:
             label="API Secret",
             password=True,
             can_reveal_password=True,
-            value=self.config.api_secret,
+            value=self.config.api_secret or "",
             width=400
         )
         
         self.setting_company = TextField(
             label="Firma",
-            value=self.config.company,
+            value=self.config.company or "",
             width=400
         )
         
         self.setting_warehouse = TextField(
             label="Standard-Lager",
-            value=self.config.default_warehouse,
+            value=self.config.default_warehouse or "",
             width=400
         )
         
         self.setting_price_list = TextField(
             label="Standard-Preisliste",
-            value=self.config.default_price_list,
+            value=self.config.default_price_list or "",
             width=400
         )
         
         self.setting_item_group = TextField(
             label="Standard-Artikelgruppe",
-            value=self.config.default_item_group,
+            value=self.config.default_item_group or "",
             width=400
         )
 
@@ -3084,7 +3084,7 @@ class ERPNextImporterApp:
             hint_text="AIza...",
             password=True,
             can_reveal_password=True,
-            value=self.config.gemini_api_key,
+            value=self.config.gemini_api_key or "",
             width=400
         )
 
@@ -3095,7 +3095,7 @@ class ERPNextImporterApp:
         self.setting_tax_rate = TextField(
             label="Standard-Steuersatz (%)",
             hint_text="19.0",
-            value=str(self.config.default_tax_rate),
+            value=str(self.config.default_tax_rate) if self.config.default_tax_rate is not None else "19.0",
             width=150,
             keyboard_type=ft.KeyboardType.NUMBER,
         )
@@ -3103,7 +3103,7 @@ class ERPNextImporterApp:
         self.setting_batch_size = TextField(
             label="Batch-Größe",
             hint_text="50",
-            value=str(self.config.batch_size),
+            value=str(self.config.batch_size) if self.config.batch_size is not None else "50",
             width=150,
             keyboard_type=ft.KeyboardType.NUMBER,
         )
@@ -3111,7 +3111,7 @@ class ERPNextImporterApp:
         self.setting_request_timeout = TextField(
             label="Timeout (Sek.)",
             hint_text="30",
-            value=str(self.config.request_timeout),
+            value=str(self.config.request_timeout) if self.config.request_timeout is not None else "30",
             width=150,
             keyboard_type=ft.KeyboardType.NUMBER,
         )
@@ -4315,7 +4315,9 @@ class ERPNextImporterApp:
             try:
                 with open(config_path, 'r') as f:
                     data = json.load(f)
-                self.config = ERPNextConfig(**data)
+                # Filter out None values to use dataclass defaults instead
+                filtered_data = {k: v for k, v in data.items() if v is not None}
+                self.config = ERPNextConfig(**filtered_data)
                 self.update_settings_ui()
                 self.log("Konfiguration geladen")
             except Exception as e:
@@ -4380,24 +4382,24 @@ class ERPNextImporterApp:
         if not hasattr(self, 'setting_url'):
             return
 
-        self.setting_url.value = self.config.base_url
-        self.setting_api_key.value = self.config.api_key
-        self.setting_api_secret.value = self.config.api_secret
-        self.setting_company.value = self.config.company
-        self.setting_warehouse.value = self.config.default_warehouse
-        self.setting_price_list.value = self.config.default_price_list
-        self.setting_item_group.value = self.config.default_item_group
+        self.setting_url.value = self.config.base_url or ""
+        self.setting_api_key.value = self.config.api_key or ""
+        self.setting_api_secret.value = self.config.api_secret or ""
+        self.setting_company.value = self.config.company or ""
+        self.setting_warehouse.value = self.config.default_warehouse or ""
+        self.setting_price_list.value = self.config.default_price_list or ""
+        self.setting_item_group.value = self.config.default_item_group or ""
 
         if hasattr(self, 'setting_gemini_api_key'):
-            self.setting_gemini_api_key.value = self.config.gemini_api_key
+            self.setting_gemini_api_key.value = self.config.gemini_api_key or ""
         
         # Import-Einstellungen
         if hasattr(self, 'setting_tax_rate'):
-            self.setting_tax_rate.value = str(self.config.default_tax_rate)
+            self.setting_tax_rate.value = str(self.config.default_tax_rate) if self.config.default_tax_rate is not None else "19.0"
         if hasattr(self, 'setting_batch_size'):
-            self.setting_batch_size.value = str(self.config.batch_size)
+            self.setting_batch_size.value = str(self.config.batch_size) if self.config.batch_size is not None else "50"
         if hasattr(self, 'setting_request_timeout'):
-            self.setting_request_timeout.value = str(self.config.request_timeout)
+            self.setting_request_timeout.value = str(self.config.request_timeout) if self.config.request_timeout is not None else "30"
 
         # Gemini API initialisieren wenn Key vorhanden
         if self.config.gemini_api_key:
