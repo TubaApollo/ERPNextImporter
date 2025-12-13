@@ -4325,14 +4325,14 @@ class ERPNextImporterApp:
     
     def save_config(self, e=None):
         """Speichert Config"""
-        self.config.base_url = self.setting_url.value
-        self.config.api_key = self.setting_api_key.value
-        self.config.api_secret = self.setting_api_secret.value
-        self.config.company = self.setting_company.value
-        self.config.default_warehouse = self.setting_warehouse.value
-        self.config.default_price_list = self.setting_price_list.value
-        self.config.default_item_group = self.setting_item_group.value
-        self.config.gemini_api_key = self.setting_gemini_api_key.value
+        self.config.base_url = self.setting_url.value or ""
+        self.config.api_key = self.setting_api_key.value or ""
+        self.config.api_secret = self.setting_api_secret.value or ""
+        self.config.company = self.setting_company.value or ""
+        self.config.default_warehouse = self.setting_warehouse.value or ""
+        self.config.default_price_list = self.setting_price_list.value or ""
+        self.config.default_item_group = self.setting_item_group.value or ""
+        self.config.gemini_api_key = self.setting_gemini_api_key.value or ""
         
         # Import-Einstellungen
         try:
