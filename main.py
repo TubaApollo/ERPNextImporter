@@ -1,12 +1,25 @@
 #!/usr/bin/env python3
 """
-ERPNext Produkt-Importer (JTL-Ameise Style) v2
-==============================================
+ERPNext Produkt-Importer (JTL-Ameise Style) v2.1
+================================================
 Vollständige Flet-GUI für ERPNext Produktimport und -export.
+
+HINWEIS: Dieses Projekt wurde modular aufgebaut!
+Die Kern-Komponenten befinden sich jetzt in:
+  - src/erpnext_importer/config.py    - Konfiguration und Datenmodelle
+  - src/erpnext_importer/api.py       - ERPNext API Client
+  - src/erpnext_importer/gemini.py    - Gemini AI Client
+  - src/erpnext_importer/parsers.py   - CSV/BMECat Parser
+  - src/erpnext_importer/fields.py    - Feld-Definitionen und Mapping
+  - src/erpnext_importer/utils.py     - Hilfsfunktionen
+
+Diese Datei (main.py) enthält die vollständige UI-Anwendung.
 
 Features:
 - CSV und BMECat XML Import
 - Flexibles Feld-Mapping mit Auto-Zuordnung
+- AI Smart-Mapping mit Google Gemini
+- Custom Fields Support (automatisch von ERPNext laden)
 - Vorlagen speichern/laden
 - Dry Run Modus
 - Bilder hochladen/aktualisieren/löschen
@@ -259,6 +272,11 @@ class ERPNextConfig:
     default_item_group: str = "Alle Artikelgruppen"
     # Gemini AI
     gemini_api_key: str = ""
+    # Import Settings
+    default_tax_rate: float = 19.0  # MwSt-Satz für Brutto/Netto-Konvertierung
+    batch_size: int = 50  # Anzahl der Datensätze pro Batch
+    request_timeout: int = 30  # Timeout in Sekunden
+    max_retries: int = 3  # Maximale Anzahl Wiederholungen bei Fehlern
 
     @property
     def auth_header(self) -> Dict[str, str]:
@@ -267,6 +285,26 @@ class ERPNextConfig:
             "Accept": "application/json",
             "Content-Type": "application/json"
         }
+    
+    def validate(self) -> Tuple[bool, List[str]]:
+        """Validiert die Konfiguration und gibt Fehler zurück"""
+        errors = []
+        
+        if not self.base_url or self.base_url == "https://erp.example.com":
+            errors.append("ERPNext URL muss konfiguriert werden")
+        elif not self.base_url.startswith(("http://", "https://")):
+            errors.append("ERPNext URL muss mit http:// oder https:// beginnen")
+        
+        if not self.api_key:
+            errors.append("API Key fehlt")
+        
+        if not self.api_secret:
+            errors.append("API Secret fehlt")
+            
+        if self.default_tax_rate < 0 or self.default_tax_rate > 100:
+            errors.append("Steuersatz muss zwischen 0 und 100 liegen")
+            
+        return len(errors) == 0, errors
 
 
 @dataclass
@@ -718,8 +756,138 @@ class BMECatParser:
 
 # ==================== ERPNext API CLIENT ====================
 
+# Standard UOM-Mapping für ERPNext (Deutsch -> ERPNext)
+UOM_MAPPING = {
+    "stück": "Stk",
+    "stk": "Stk",
+    "stck": "Stk",
+    "pcs": "Stk",
+    "piece": "Stk",
+    "pieces": "Stk",
+    "kg": "Kg",
+    "kilogramm": "Kg",
+    "kilo": "Kg",
+    "g": "Gramm",
+    "gramm": "Gramm",
+    "gram": "Gramm",
+    "l": "Liter",
+    "liter": "Liter",
+    "litre": "Liter",
+    "ml": "Milliliter",
+    "milliliter": "Milliliter",
+    "m": "Meter",
+    "meter": "Meter",
+    "cm": "Zentimeter",
+    "zentimeter": "Zentimeter",
+    "mm": "Millimeter",
+    "millimeter": "Millimeter",
+    "set": "Set",
+    "paar": "Paar",
+    "pair": "Paar",
+    "box": "Box",
+    "karton": "Karton",
+    "palette": "Palette",
+}
+
+
+class ERPNextAPIError(Exception):
+    """Spezifische Fehlerklasse für ERPNext API Fehler mit benutzerfreundlichen Meldungen"""
+    
+    def __init__(self, message: str, original_error: Exception = None, 
+                 error_code: str = None, suggestion: str = None):
+        self.message = message
+        self.original_error = original_error
+        self.error_code = error_code
+        self.suggestion = suggestion
+        super().__init__(self.get_full_message())
+    
+    def get_full_message(self) -> str:
+        parts = [self.message]
+        if self.error_code:
+            parts.append(f"[{self.error_code}]")
+        if self.suggestion:
+            parts.append(f"Tipp: {self.suggestion}")
+        return " | ".join(parts)
+
+
+def parse_number(value: Any, allow_empty: bool = True) -> Optional[float]:
+    """
+    Parst einen Wert zu einer Zahl (float).
+    Unterstützt deutsche Zahlenformate (Komma als Dezimaltrennzeichen).
+    
+    Args:
+        value: Der zu parsende Wert
+        allow_empty: Wenn True, gibt None für leere Werte zurück
+        
+    Returns:
+        float oder None
+    """
+    if value is None or value == "":
+        return None if allow_empty else 0.0
+    
+    try:
+        # Bereits eine Zahl
+        if isinstance(value, (int, float)):
+            return float(value)
+        
+        # String-Verarbeitung
+        str_val = str(value).strip()
+        if not str_val:
+            return None if allow_empty else 0.0
+        
+        # Entferne Tausender-Trennzeichen (Punkt oder Leerzeichen)
+        # und ersetze Komma durch Punkt für Dezimal
+        str_val = str_val.replace(" ", "")
+        
+        # Deutsche Notation: 1.234,56 -> 1234.56
+        if "," in str_val and "." in str_val:
+            # Punkt ist Tausender-Trennzeichen
+            str_val = str_val.replace(".", "").replace(",", ".")
+        elif "," in str_val:
+            # Nur Komma -> Dezimaltrennzeichen
+            str_val = str_val.replace(",", ".")
+        
+        return float(str_val)
+    except (ValueError, TypeError):
+        return None if allow_empty else 0.0
+
+
+def brutto_to_netto(brutto: float, tax_rate: float = 19.0) -> float:
+    """
+    Konvertiert Brutto zu Netto mit gegebenem Steuersatz.
+    
+    Args:
+        brutto: Brutto-Betrag
+        tax_rate: Steuersatz in Prozent (Standard: 19.0)
+        
+    Returns:
+        Netto-Betrag (gerundet auf 2 Dezimalstellen)
+    """
+    if brutto is None or brutto == 0:
+        return 0.0
+    tax_divisor = 1 + (tax_rate / 100)
+    return round(brutto / tax_divisor, 2)
+
+
+def netto_to_brutto(netto: float, tax_rate: float = 19.0) -> float:
+    """
+    Konvertiert Netto zu Brutto mit gegebenem Steuersatz.
+    
+    Args:
+        netto: Netto-Betrag
+        tax_rate: Steuersatz in Prozent (Standard: 19.0)
+        
+    Returns:
+        Brutto-Betrag (gerundet auf 2 Dezimalstellen)
+    """
+    if netto is None or netto == 0:
+        return 0.0
+    tax_multiplier = 1 + (tax_rate / 100)
+    return round(netto * tax_multiplier, 2)
+
+
 class ERPNextAPI:
-    """ERPNext REST API Client - Vollständige Implementation"""
+    """ERPNext REST API Client - Vollständige Implementation mit verbesserter Fehlerbehandlung"""
     
     def __init__(self, config: ERPNextConfig):
         self.config = config
@@ -727,15 +895,19 @@ class ERPNextAPI:
         self._item_cache: Dict[str, str] = {}
         self._item_group_cache: Dict[str, str] = {}
         self._attribute_cache: Dict[str, bool] = {}
+        self._uom_cache: Dict[str, str] = {}
+        self._connection_healthy = False
+        self._last_health_check = 0
     
     def _create_session(self):
         if not REQUESTS_AVAILABLE:
             return None
         session = requests.Session()
         retry_strategy = Retry(
-            total=3,
+            total=self.config.max_retries,
             backoff_factor=1,
             status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "POST"]
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         session.mount("http://", adapter)
@@ -743,67 +915,329 @@ class ERPNextAPI:
         session.headers.update(self.config.auth_header)
         return session
     
+    def _parse_error_response(self, response) -> str:
+        """Extrahiert benutzerfreundliche Fehlermeldung aus API-Antwort"""
+        try:
+            error_data = response.json()
+            # ERPNext gibt Fehler in verschiedenen Formaten zurück
+            if "message" in error_data:
+                return error_data["message"]
+            if "_server_messages" in error_data:
+                messages = json.loads(error_data["_server_messages"])
+                if messages:
+                    msg = json.loads(messages[0])
+                    return msg.get("message", str(messages[0]))
+            if "exc_type" in error_data:
+                exc_type = error_data["exc_type"]
+                if exc_type == "DuplicateEntryError":
+                    return "Datensatz existiert bereits"
+                elif exc_type == "ValidationError":
+                    return "Validierungsfehler - prüfen Sie die Pflichtfelder"
+                elif exc_type == "LinkValidationError":
+                    return "Verknüpfter Datensatz nicht gefunden (z.B. Kategorie, Hersteller)"
+                return f"ERPNext Fehler: {exc_type}"
+        except:
+            pass
+        return f"HTTP {response.status_code}: {response.reason}"
+    
     def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Dict:
-        """Führt API-Request aus"""
+        """Führt API-Request aus mit verbesserter Fehlerbehandlung"""
         if not self.session:
-            raise Exception("requests library not available")
+            raise ERPNextAPIError(
+                "HTTP-Bibliothek nicht verfügbar",
+                suggestion="Installieren Sie requests: pip install requests"
+            )
         
         url = f"{self.config.base_url}/api/resource/{endpoint}"
+        timeout = self.config.request_timeout
         
         try:
             if method == "GET":
-                response = self.session.get(url, params=data, timeout=30)
+                response = self.session.get(url, params=data, timeout=timeout)
             elif method == "POST":
-                response = self.session.post(url, json=data, timeout=30)
+                response = self.session.post(url, json=data, timeout=timeout)
             elif method == "PUT":
-                response = self.session.put(url, json=data, timeout=30)
+                response = self.session.put(url, json=data, timeout=timeout)
             elif method == "DELETE":
-                response = self.session.delete(url, timeout=30)
+                response = self.session.delete(url, timeout=timeout)
             else:
-                raise ValueError(f"Unknown HTTP method: {method}")
+                raise ValueError(f"Unbekannte HTTP-Methode: {method}")
             
-            response.raise_for_status()
+            # Erfolg prüfen
+            if response.status_code >= 400:
+                error_msg = self._parse_error_response(response)
+                
+                # Spezifische Tipps je nach Fehlercode
+                suggestion = None
+                if response.status_code == 401:
+                    suggestion = "Prüfen Sie API Key und Secret in den Einstellungen"
+                elif response.status_code == 403:
+                    suggestion = "Der API-Benutzer hat keine Berechtigung für diese Aktion"
+                elif response.status_code == 404:
+                    suggestion = "Der Datensatz oder Endpunkt existiert nicht"
+                elif response.status_code == 417:
+                    suggestion = "Pflichtfeld fehlt oder Validierung fehlgeschlagen"
+                
+                raise ERPNextAPIError(
+                    error_msg,
+                    error_code=str(response.status_code),
+                    suggestion=suggestion
+                )
+            
             return response.json() if response.text else {}
             
+        except requests.exceptions.Timeout:
+            raise ERPNextAPIError(
+                "Zeitüberschreitung bei der Verbindung",
+                suggestion=f"Server nicht erreichbar oder zu langsam (Timeout: {timeout}s)"
+            )
+        except requests.exceptions.ConnectionError as e:
+            raise ERPNextAPIError(
+                "Verbindung zu ERPNext fehlgeschlagen",
+                original_error=e,
+                suggestion="Prüfen Sie die URL und Ihre Internetverbindung"
+            )
+        except ERPNextAPIError:
+            raise  # Bereits formatiert
         except Exception as e:
             logger.error(f"API Error {method} {endpoint}: {e}")
-            raise
+            raise ERPNextAPIError(f"Unerwarteter Fehler: {str(e)}", original_error=e)
     
     def _call_method(self, method_name: str, data: Optional[Dict] = None,
                      files: Optional[Dict] = None) -> Dict:
-        """Ruft Frappe-Methode auf"""
+        """Ruft Frappe-Methode auf mit verbesserter Fehlerbehandlung"""
         if not self.session:
-            raise Exception("requests library not available")
+            raise ERPNextAPIError("HTTP-Bibliothek nicht verfügbar")
         
         url = f"{self.config.base_url}/api/method/{method_name}"
         
         try:
             if files:
                 headers = {"Authorization": self.config.auth_header["Authorization"]}
-                response = self.session.post(url, data=data, files=files, headers=headers, timeout=60)
+                response = self.session.post(url, data=data, files=files, 
+                                            headers=headers, timeout=60)
             else:
-                response = self.session.post(url, json=data, timeout=30)
+                response = self.session.post(url, json=data, 
+                                            timeout=self.config.request_timeout)
             
-            response.raise_for_status()
+            if response.status_code >= 400:
+                error_msg = self._parse_error_response(response)
+                raise ERPNextAPIError(error_msg, error_code=str(response.status_code))
+            
             return response.json() if response.text else {}
+        except ERPNextAPIError:
+            raise
         except Exception as e:
             logger.error(f"Method Error {method_name}: {e}")
-            raise
+            raise ERPNextAPIError(f"Methodenaufruf fehlgeschlagen: {str(e)}", original_error=e)
     
     def test_connection(self) -> Tuple[bool, str]:
-        """Testet API-Verbindung"""
+        """Testet API-Verbindung mit detaillierten Fehlermeldungen"""
         if not REQUESTS_AVAILABLE:
-            return False, "requests library not installed"
+            return False, "requests library nicht installiert. Führen Sie aus: pip install requests"
+        
+        # Erst Konfiguration validieren
+        valid, errors = self.config.validate()
+        if not valid:
+            return False, f"Konfigurationsfehler: {'; '.join(errors)}"
         
         try:
             url = f"{self.config.base_url}/api/method/frappe.auth.get_logged_user"
             response = self.session.get(url, timeout=10)
+            
             if response.status_code == 200:
                 data = response.json()
-                return True, f"Verbunden als: {data.get('message', 'OK')}"
-            return False, f"Status {response.status_code}"
+                user = data.get('message', 'OK')
+                self._connection_healthy = True
+                self._last_health_check = time.time()
+                return True, f"Verbunden als: {user}"
+            elif response.status_code == 401:
+                return False, "Authentifizierung fehlgeschlagen - prüfen Sie API Key/Secret"
+            elif response.status_code == 403:
+                return False, "Zugriff verweigert - API-Benutzer hat keine Berechtigung"
+            else:
+                error_msg = self._parse_error_response(response)
+                return False, f"Verbindungsfehler: {error_msg}"
+                
+        except requests.exceptions.Timeout:
+            return False, f"Zeitüberschreitung - Server {self.config.base_url} antwortet nicht"
+        except requests.exceptions.ConnectionError:
+            return False, f"Verbindung zu {self.config.base_url} fehlgeschlagen - URL prüfen"
         except Exception as e:
-            return False, str(e)
+            return False, f"Unerwarteter Fehler: {str(e)}"
+    
+    def is_healthy(self) -> bool:
+        """Prüft ob die Verbindung noch gesund ist (mit Cache)"""
+        # Health-Check alle 5 Minuten
+        if time.time() - self._last_health_check > 300:
+            success, _ = self.test_connection()
+            return success
+        return self._connection_healthy
+    
+    def normalize_uom(self, uom: str) -> str:
+        """Normalisiert UOM-Eingabe auf ERPNext-Standard"""
+        if not uom:
+            return "Stk"
+        
+        uom_lower = uom.lower().strip()
+        
+        # Erst Cache prüfen
+        if uom_lower in self._uom_cache:
+            return self._uom_cache[uom_lower]
+        
+        # Mapping prüfen
+        if uom_lower in UOM_MAPPING:
+            result = UOM_MAPPING[uom_lower]
+            self._uom_cache[uom_lower] = result
+            return result
+        
+        # Original zurückgeben (ERPNext wird validieren)
+        return uom
+    
+    # ==================== CUSTOM FIELDS ====================
+    
+    def get_custom_fields(self, doctype: str = "Item") -> List[Dict]:
+        """
+        Holt alle Custom Fields für einen Doctype von ERPNext.
+        
+        Args:
+            doctype: Der Doctype (z.B. "Item", "Item Group")
+            
+        Returns:
+            Liste von Custom Field Definitionen mit fieldname, label, fieldtype, etc.
+        """
+        try:
+            params = {
+                "fields": '["fieldname", "label", "fieldtype", "options", "reqd", "description", "default"]',
+                "filters": json.dumps([["dt", "=", doctype]]),
+                "limit_page_length": 0
+            }
+            result = self._make_request("GET", "Custom Field", params)
+            custom_fields = result.get("data", [])
+            
+            logger.info(f"Gefunden: {len(custom_fields)} Custom Fields für {doctype}")
+            return custom_fields
+            
+        except Exception as e:
+            logger.warning(f"Konnte Custom Fields für {doctype} nicht laden: {e}")
+            return []
+    
+    def get_all_item_fields(self, include_custom: bool = True) -> Dict[str, Dict]:
+        """
+        Holt alle verfügbaren Felder für Item (Standard + Custom).
+        
+        Args:
+            include_custom: Ob Custom Fields eingeschlossen werden sollen
+            
+        Returns:
+            Dict mit Feldname -> Feldinformationen
+        """
+        # Starte mit Standard-Feldern
+        all_fields = dict(ERPNEXT_ITEM_FIELDS)
+        
+        if include_custom and self.is_healthy():
+            custom_fields = self.get_custom_fields("Item")
+            
+            for cf in custom_fields:
+                fieldname = cf.get("fieldname", "")
+                if not fieldname:
+                    continue
+                
+                # Feldtyp-Mapping für UI
+                fieldtype = cf.get("fieldtype", "Data")
+                
+                # Bestimme UI-freundlichen Typ
+                ui_type = "Data"
+                if fieldtype in ["Text", "Text Editor", "Small Text", "Long Text"]:
+                    ui_type = "Text"
+                elif fieldtype in ["Int", "Float", "Currency", "Percent"]:
+                    ui_type = fieldtype
+                elif fieldtype == "Check":
+                    ui_type = "Check"
+                elif fieldtype == "Link":
+                    ui_type = "Link"
+                elif fieldtype == "Select":
+                    ui_type = "Select"
+                
+                # Custom Field zur Liste hinzufügen
+                all_fields[fieldname] = {
+                    "label": f"✨ {cf.get('label', fieldname)}",  # Markierung für Custom
+                    "type": ui_type,
+                    "required": cf.get("reqd", 0) == 1,
+                    "custom": True,
+                    "description": cf.get("description", ""),
+                    "default": cf.get("default", ""),
+                    "options": cf.get("options", ""),
+                }
+        
+        return all_fields
+    
+    def get_doctype_meta(self, doctype: str = "Item") -> Dict:
+        """
+        Holt die vollständige Doctype-Metadaten von ERPNext.
+        Nützlich für fortgeschrittene Validierung.
+        """
+        try:
+            url = f"{self.config.base_url}/api/method/frappe.client.get_meta"
+            response = self.session.post(
+                url, 
+                json={"doctype": doctype},
+                timeout=self.config.request_timeout
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("message", {})
+            return {}
+            
+        except Exception as e:
+            logger.warning(f"Konnte Doctype-Meta für {doctype} nicht laden: {e}")
+            return {}
+    
+    def validate_field_value(self, fieldname: str, value: Any, field_info: Dict) -> Tuple[bool, str, Any]:
+        """
+        Validiert einen Wert gegen die Felddefinition.
+        
+        Returns:
+            (valid, error_message, converted_value)
+        """
+        if not value and not field_info.get("required"):
+            return True, "", value
+        
+        if not value and field_info.get("required"):
+            return False, f"Pflichtfeld '{fieldname}' ist leer", value
+        
+        field_type = field_info.get("type", "Data")
+        
+        try:
+            if field_type in ["Int"]:
+                converted = int(float(str(value).replace(",", ".")))
+                return True, "", converted
+            
+            elif field_type in ["Float", "Currency", "Percent"]:
+                converted = float(str(value).replace(",", ".").replace(" ", ""))
+                return True, "", converted
+            
+            elif field_type == "Check":
+                if isinstance(value, bool):
+                    return True, "", 1 if value else 0
+                str_val = str(value).lower().strip()
+                converted = 1 if str_val in ("1", "true", "ja", "yes", "y", "x") else 0
+                return True, "", converted
+            
+            elif field_type == "Link":
+                # Link-Felder sollten existierende Datensätze referenzieren
+                # Hier nur Basis-Validierung (nicht leer)
+                if not str(value).strip():
+                    return False, f"Link-Feld '{fieldname}' ist leer", value
+                return True, "", str(value).strip()
+            
+            else:
+                # Text/Data - String konvertieren
+                return True, "", str(value)
+                
+        except Exception as e:
+            return False, f"Konvertierungsfehler für '{fieldname}': {e}", value
     
     # ==================== ITEM METHODS ====================
     
@@ -1487,6 +1921,11 @@ class ERPNextImporterApp:
         self.source_data: List[Dict] = []
         self.source_columns: List[str] = []
         self.field_mappings: Dict[str, FieldMapping] = {}
+        
+        # Custom Fields Cache (von ERPNext geladen)
+        self.custom_fields_loaded: bool = False
+        self.custom_item_fields: Dict[str, Dict] = {}
+        self.custom_item_group_fields: Dict[str, Dict] = {}
         
         # Image folder
         self.image_folder: Optional[str] = None
@@ -2409,6 +2848,20 @@ class ERPNextImporterApp:
                 color=Colors.WHITE,
             )
         )
+        
+        # NEU: Custom Fields laden Button
+        self.load_custom_fields_btn = ElevatedButton(
+            "Custom Fields laden",
+            icon=Icons.CLOUD_DOWNLOAD,
+            on_click=self.load_custom_fields_from_erpnext,
+            tooltip="Lädt benutzerdefinierte Felder direkt von ERPNext",
+            style=ButtonStyle(
+                bgcolor=Colors.TEAL_700,
+                color=Colors.WHITE,
+            )
+        )
+        
+        self.custom_fields_status = Text("", size=12, color=Colors.GREY_400)
 
         self.ai_mapping_status = Text("", size=12, color=Colors.GREY_400)
 
@@ -2424,6 +2877,7 @@ class ERPNextImporterApp:
                     ft.Icon(Icons.SWAP_HORIZ, size=24, color=Colors.BLUE_400),
                     Text("Feld-Zuordnung", size=24, weight=FontWeight.BOLD),
                     Container(expand=True),
+                    self.load_custom_fields_btn,
                     auto_map_btn,
                     self.ai_map_btn,
                     clear_btn,
@@ -2432,11 +2886,12 @@ class ERPNextImporterApp:
                 Row([
                     Text(
                         "Ordne die Spalten aus deiner Quelldatei den ERPNext-Feldern zu. "
-                        "Felder mit * sind Pflichtfelder.",
+                        "Felder mit * sind Pflichtfelder. ✨ = Custom Field",
                         size=14,
                         color=Colors.GREY_400
                     ),
                     Container(expand=True),
+                    self.custom_fields_status,
                     self.ai_mapping_status,
                 ]),
                 Divider(height=10, color=Colors.TRANSPARENT),
@@ -2636,6 +3091,31 @@ class ERPNextImporterApp:
         self.gemini_status_icon = ft.Icon(Icons.CIRCLE, size=12, color=Colors.GREY_600)
         self.gemini_status_text = Text("Nicht konfiguriert", size=12, color=Colors.GREY_400)
 
+        # Import-Einstellungen
+        self.setting_tax_rate = TextField(
+            label="Standard-Steuersatz (%)",
+            hint_text="19.0",
+            value=str(self.config.default_tax_rate),
+            width=150,
+            keyboard_type=ft.KeyboardType.NUMBER,
+        )
+        
+        self.setting_batch_size = TextField(
+            label="Batch-Größe",
+            hint_text="50",
+            value=str(self.config.batch_size),
+            width=150,
+            keyboard_type=ft.KeyboardType.NUMBER,
+        )
+        
+        self.setting_request_timeout = TextField(
+            label="Timeout (Sek.)",
+            hint_text="30",
+            value=str(self.config.request_timeout),
+            width=150,
+            keyboard_type=ft.KeyboardType.NUMBER,
+        )
+
         return Container(
             content=Column([
                 Row([
@@ -2723,7 +3203,40 @@ class ERPNextImporterApp:
                             width=350
                         ),
                     ),
-                ], spacing=20, alignment=MainAxisAlignment.START),
+
+                    # Import-Einstellungen Card
+                    Card(
+                        content=Container(
+                            content=Column([
+                                Row([
+                                    ft.Icon(Icons.TUNE, color=Colors.ORANGE_400),
+                                    Text("Import-Einstellungen", weight=FontWeight.BOLD, size=16),
+                                ], spacing=10),
+                                Divider(height=10, color=Colors.TRANSPARENT),
+                                Text(
+                                    "Einstellungen für den Import-Prozess.\n"
+                                    "Steuersatz wird für Brutto→Netto verwendet.",
+                                    size=12,
+                                    color=Colors.GREY_400
+                                ),
+                                Divider(height=15),
+                                self.setting_tax_rate,
+                                self.setting_batch_size,
+                                self.setting_request_timeout,
+                                Divider(height=10, color=Colors.TRANSPARENT),
+                                Text(
+                                    "Tipp: Bei großen Imports Batch-Größe\n"
+                                    "auf 20-50 reduzieren für Stabilität.",
+                                    size=11,
+                                    color=Colors.GREY_500,
+                                    italic=True
+                                ),
+                            ], spacing=8),
+                            padding=20,
+                            width=250
+                        ),
+                    ),
+                ], spacing=20, alignment=MainAxisAlignment.START, wrap=True),
             ], scroll=ScrollMode.AUTO),
             padding=20
         )
@@ -2873,13 +3386,19 @@ class ERPNextImporterApp:
 
         # Wähle Zielfelder basierend auf Import-Typ
         if import_type == "kategorien":
-            target_fields = ERPNEXT_ITEM_GROUP_FIELDS
+            target_fields = dict(ERPNEXT_ITEM_GROUP_FIELDS)
+            # Custom Fields für Item Group hinzufügen
+            if self.custom_fields_loaded and self.custom_item_group_fields:
+                target_fields.update(self.custom_item_group_fields)
         elif import_type == "attribute":
             target_fields = ERPNEXT_ATTRIBUTE_FIELDS
         elif import_type == "varianten":
             target_fields = ERPNEXT_VARIANT_FIELDS
         else:  # artikel, preise
-            target_fields = ERPNEXT_ITEM_FIELDS
+            target_fields = dict(ERPNEXT_ITEM_FIELDS)
+            # Custom Fields für Item hinzufügen
+            if self.custom_fields_loaded and self.custom_item_fields:
+                target_fields.update(self.custom_item_fields)
 
         for col in self.source_columns:
             row = self._create_mapping_row(col, target_fields)
@@ -3068,6 +3587,117 @@ class ERPNextImporterApp:
         self.log("Alle Mappings gelöscht")
         self.page.update()
 
+    def load_custom_fields_from_erpnext(self, e=None):
+        """Lädt Custom Fields von ERPNext und aktualisiert die Mapping-Liste"""
+        if not self.api:
+            self.log("Keine API-Verbindung! Bitte erst in Einstellungen verbinden.", error=True)
+            self.custom_fields_status.value = "Keine Verbindung"
+            self.custom_fields_status.color = Colors.RED_400
+            self.page.update()
+            return
+        
+        # UI Feedback
+        self.load_custom_fields_btn.disabled = True
+        self.custom_fields_status.value = "Lade Custom Fields..."
+        self.custom_fields_status.color = Colors.TEAL_400
+        self.page.update()
+        
+        # In separatem Thread ausführen
+        thread = threading.Thread(target=self._run_load_custom_fields)
+        thread.start()
+    
+    def _run_load_custom_fields(self):
+        """Lädt Custom Fields in separatem Thread"""
+        try:
+            # Custom Fields für Item laden
+            item_custom = self.api.get_custom_fields("Item")
+            self.custom_item_fields = {}
+            
+            for cf in item_custom:
+                fieldname = cf.get("fieldname", "")
+                if not fieldname:
+                    continue
+                
+                fieldtype = cf.get("fieldtype", "Data")
+                
+                # Bestimme UI-freundlichen Typ
+                ui_type = "Data"
+                if fieldtype in ["Text", "Text Editor", "Small Text", "Long Text"]:
+                    ui_type = "Text"
+                elif fieldtype in ["Int", "Float", "Currency", "Percent"]:
+                    ui_type = fieldtype
+                elif fieldtype == "Check":
+                    ui_type = "Check"
+                elif fieldtype == "Link":
+                    ui_type = "Link"
+                elif fieldtype == "Select":
+                    ui_type = "Select"
+                
+                self.custom_item_fields[fieldname] = {
+                    "label": f"✨ {cf.get('label', fieldname)}",
+                    "type": ui_type,
+                    "required": cf.get("reqd", 0) == 1,
+                    "custom": True,
+                    "description": cf.get("description", ""),
+                    "default": cf.get("default", ""),
+                    "options": cf.get("options", ""),
+                }
+            
+            # Custom Fields für Item Group laden
+            item_group_custom = self.api.get_custom_fields("Item Group")
+            self.custom_item_group_fields = {}
+            
+            for cf in item_group_custom:
+                fieldname = cf.get("fieldname", "")
+                if not fieldname:
+                    continue
+                
+                fieldtype = cf.get("fieldtype", "Data")
+                ui_type = "Data"
+                if fieldtype in ["Text", "Text Editor", "Small Text", "Long Text"]:
+                    ui_type = "Text"
+                elif fieldtype in ["Int", "Float", "Currency", "Percent"]:
+                    ui_type = fieldtype
+                elif fieldtype == "Check":
+                    ui_type = "Check"
+                
+                self.custom_item_group_fields[fieldname] = {
+                    "label": f"✨ {cf.get('label', fieldname)}",
+                    "type": ui_type,
+                    "required": cf.get("reqd", 0) == 1,
+                    "custom": True,
+                }
+            
+            self.custom_fields_loaded = True
+            
+            total_custom = len(self.custom_item_fields) + len(self.custom_item_group_fields)
+            self.log(f"Custom Fields geladen: {len(self.custom_item_fields)} für Item, "
+                    f"{len(self.custom_item_group_fields)} für Item Group")
+            
+            # Status aktualisieren
+            self.custom_fields_status.value = f"{total_custom} Custom Fields"
+            self.custom_fields_status.color = Colors.GREEN_400
+            
+            # Mapping-Liste aktualisieren wenn Spalten vorhanden
+            if self.source_columns:
+                self.update_mapping_list()
+                self.log("Mapping-Liste mit Custom Fields aktualisiert")
+            
+        except Exception as ex:
+            self.log(f"Fehler beim Laden der Custom Fields: {ex}", error=True)
+            self.custom_fields_status.value = "Fehler"
+            self.custom_fields_status.color = Colors.RED_400
+        
+        self._finish_load_custom_fields()
+    
+    def _finish_load_custom_fields(self):
+        """Beendet Custom Fields Laden"""
+        self.load_custom_fields_btn.disabled = False
+        try:
+            self.page.update()
+        except:
+            pass
+
     def ai_smart_map_fields(self, e=None):
         """AI-basiertes Smart-Mapping mit Gemini"""
         if not self.source_columns:
@@ -3095,12 +3725,23 @@ class ERPNextImporterApp:
         """Führt AI-Mapping in separatem Thread aus"""
         try:
             import_type = self.import_type.value
-            target_fields = ERPNEXT_ITEM_FIELDS if import_type in ["artikel", "preise"] else ERPNEXT_ITEM_GROUP_FIELDS
+            
+            # Zielfelder mit Custom Fields kombinieren
+            if import_type in ["artikel", "preise"]:
+                target_fields = dict(ERPNEXT_ITEM_FIELDS)
+                if self.custom_fields_loaded and self.custom_item_fields:
+                    target_fields.update(self.custom_item_fields)
+            else:
+                target_fields = dict(ERPNEXT_ITEM_GROUP_FIELDS)
+                if self.custom_fields_loaded and self.custom_item_group_fields:
+                    target_fields.update(self.custom_item_group_fields)
 
             # Sample-Daten für bessere Erkennung
             sample_data = self.source_data[:5] if self.source_data else None
 
             self.log("Starte Gemini AI Smart-Mapping...")
+            if self.custom_fields_loaded:
+                self.log(f"Inkl. {len(self.custom_item_fields)} Custom Fields")
 
             # AI Mapping anfordern
             ai_mappings = self.gemini.smart_map_fields(
@@ -3337,13 +3978,15 @@ class ERPNextImporterApp:
 
                 # ==================== JTL-SPEZIFISCHE FELDVERARBEITUNG ====================
 
-                # VK Brutto -> standard_rate (Netto konvertieren, 19% MwSt)
+                # VK Brutto -> standard_rate (Netto konvertieren mit konfigurierbarem Steuersatz)
                 if "standard_rate_brutto" in item_data:
                     brutto = item_data.pop("standard_rate_brutto")
                     try:
                         brutto_val = float(str(brutto).replace(",", ".").replace(" ", ""))
-                        # Brutto zu Netto (19% MwSt)
-                        netto = round(brutto_val / 1.19, 2)
+                        # Brutto zu Netto (Steuersatz aus Config)
+                        tax_rate = self.config.default_tax_rate
+                        tax_divisor = 1 + (tax_rate / 100)
+                        netto = round(brutto_val / tax_divisor, 2)
                         item_data["standard_rate"] = netto
                     except:
                         pass
@@ -3688,6 +4331,22 @@ class ERPNextImporterApp:
         self.config.default_price_list = self.setting_price_list.value
         self.config.default_item_group = self.setting_item_group.value
         self.config.gemini_api_key = self.setting_gemini_api_key.value
+        
+        # Import-Einstellungen
+        try:
+            self.config.default_tax_rate = float(self.setting_tax_rate.value or "19.0")
+        except ValueError:
+            self.config.default_tax_rate = 19.0
+        
+        try:
+            self.config.batch_size = int(self.setting_batch_size.value or "50")
+        except ValueError:
+            self.config.batch_size = 50
+        
+        try:
+            self.config.request_timeout = int(self.setting_request_timeout.value or "30")
+        except ValueError:
+            self.config.request_timeout = 30
 
         config_data = {
             "base_url": self.config.base_url,
@@ -3698,6 +4357,9 @@ class ERPNextImporterApp:
             "default_price_list": self.config.default_price_list,
             "default_item_group": self.config.default_item_group,
             "gemini_api_key": self.config.gemini_api_key,
+            "default_tax_rate": self.config.default_tax_rate,
+            "batch_size": self.config.batch_size,
+            "request_timeout": self.config.request_timeout,
         }
 
         with open("erpnext_config.json", 'w') as f:
@@ -3728,6 +4390,14 @@ class ERPNextImporterApp:
 
         if hasattr(self, 'setting_gemini_api_key'):
             self.setting_gemini_api_key.value = self.config.gemini_api_key
+        
+        # Import-Einstellungen
+        if hasattr(self, 'setting_tax_rate'):
+            self.setting_tax_rate.value = str(self.config.default_tax_rate)
+        if hasattr(self, 'setting_batch_size'):
+            self.setting_batch_size.value = str(self.config.batch_size)
+        if hasattr(self, 'setting_request_timeout'):
+            self.setting_request_timeout.value = str(self.config.request_timeout)
 
         # Gemini API initialisieren wenn Key vorhanden
         if self.config.gemini_api_key:
