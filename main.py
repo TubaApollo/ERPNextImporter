@@ -1918,8 +1918,9 @@ class ERPNextImporterApp:
 
         # Daten
         self.source_file: Optional[str] = None
-        self.source_data: List[Dict] = []
+        self.source_data: List[Dict] = []  # Nur Vorschaudaten (max 500 Zeilen)
         self.source_columns: List[str] = []
+        self.total_rows: int = 0  # Gesamtanzahl Zeilen in der Datei
         self.field_mappings: Dict[str, FieldMapping] = {}
         
         # Custom Fields Cache (von ERPNext geladen)
@@ -1963,7 +1964,7 @@ class ERPNextImporterApp:
         self.page.title = "ERPNext Produkt-Importer"
         self.page.theme_mode = ThemeMode.DARK
         self.page.padding = 20
-        self.page.scroll = ScrollMode.AUTO
+        self.page.scroll = None  # Kein Page-Scroll, Tabs haben eigenes Scrolling
         self.page.window.width = 1400
         self.page.window.height = 900
     
@@ -3032,49 +3033,62 @@ class ERPNextImporterApp:
     
     def _build_settings_tab(self) -> Container:
         """Einstellungen-Tab"""
-        
+
+        # Sichere Config-Werte mit Fallback
+        config_base_url = getattr(self.config, 'base_url', None) if self.config else None
+        config_api_key = getattr(self.config, 'api_key', None) if self.config else None
+        config_api_secret = getattr(self.config, 'api_secret', None) if self.config else None
+        config_company = getattr(self.config, 'company', None) if self.config else None
+        config_warehouse = getattr(self.config, 'default_warehouse', None) if self.config else None
+        config_price_list = getattr(self.config, 'default_price_list', None) if self.config else None
+        config_item_group = getattr(self.config, 'default_item_group', None) if self.config else None
+        config_gemini_key = getattr(self.config, 'gemini_api_key', None) if self.config else None
+        config_tax_rate = getattr(self.config, 'default_tax_rate', None) if self.config else None
+        config_batch_size = getattr(self.config, 'batch_size', None) if self.config else None
+        config_timeout = getattr(self.config, 'request_timeout', None) if self.config else None
+
         self.setting_url = TextField(
             label="ERPNext URL",
             hint_text="https://erp.example.com",
-            value=self.config.base_url or "",
+            value=config_base_url or "",
             width=400
         )
-        
+
         self.setting_api_key = TextField(
             label="API Key",
-            value=self.config.api_key or "",
+            value=config_api_key or "",
             width=400
         )
-        
+
         self.setting_api_secret = TextField(
             label="API Secret",
             password=True,
             can_reveal_password=True,
-            value=self.config.api_secret or "",
+            value=config_api_secret or "",
             width=400
         )
-        
+
         self.setting_company = TextField(
             label="Firma",
-            value=self.config.company or "",
+            value=config_company or "",
             width=400
         )
-        
+
         self.setting_warehouse = TextField(
             label="Standard-Lager",
-            value=self.config.default_warehouse or "",
+            value=config_warehouse or "",
             width=400
         )
-        
+
         self.setting_price_list = TextField(
             label="Standard-Preisliste",
-            value=self.config.default_price_list or "",
+            value=config_price_list or "",
             width=400
         )
-        
+
         self.setting_item_group = TextField(
             label="Standard-Artikelgruppe",
-            value=self.config.default_item_group or "",
+            value=config_item_group or "",
             width=400
         )
 
@@ -3084,7 +3098,7 @@ class ERPNextImporterApp:
             hint_text="AIza...",
             password=True,
             can_reveal_password=True,
-            value=self.config.gemini_api_key or "",
+            value=config_gemini_key or "",
             width=400
         )
 
@@ -3095,23 +3109,23 @@ class ERPNextImporterApp:
         self.setting_tax_rate = TextField(
             label="Standard-Steuersatz (%)",
             hint_text="19.0",
-            value=str(self.config.default_tax_rate) if self.config.default_tax_rate is not None else "19.0",
+            value=str(config_tax_rate) if config_tax_rate is not None else "19.0",
             width=150,
             keyboard_type=ft.KeyboardType.NUMBER,
         )
-        
+
         self.setting_batch_size = TextField(
             label="Batch-Größe",
             hint_text="50",
-            value=str(self.config.batch_size) if self.config.batch_size is not None else "50",
+            value=str(config_batch_size) if config_batch_size is not None else "50",
             width=150,
             keyboard_type=ft.KeyboardType.NUMBER,
         )
-        
+
         self.setting_request_timeout = TextField(
             label="Timeout (Sek.)",
             hint_text="30",
-            value=str(self.config.request_timeout) if self.config.request_timeout is not None else "30",
+            value=str(config_timeout) if config_timeout is not None else "30",
             width=150,
             keyboard_type=ft.KeyboardType.NUMBER,
         )
@@ -3157,9 +3171,9 @@ class ERPNextImporterApp:
                                     ),
                                 ], spacing=10)
                             ], spacing=8),
-                            padding=20
-                        ),
-                        expand=True
+                            padding=20,
+                            width=420
+                        )
                     ),
 
                     # Gemini AI Card
@@ -3299,40 +3313,58 @@ class ERPNextImporterApp:
         self.page.update()
     
     def parse_source_file(self):
-        """Parst Quelldatei"""
+        """Parst Quelldatei - Optimiert für große Dateien"""
         if not self.source_file:
             return
-        
+
         try:
             ext = os.path.splitext(self.source_file)[1].lower()
-            
+
             if ext == ".xml":
                 parser = BMECatParser()
                 self.source_data, _ = parser.parse(self.source_file)
                 self.source_columns = parser.get_columns() if self.source_data else []
-                self.file_info_text.value = f"BMECat: {len(self.source_data)} Produkte"
+                self.total_rows = len(self.source_data)
+                self.file_info_text.value = f"BMECat: {self.total_rows} Produkte"
             else:
                 delimiter = self.csv_delimiter.value
                 encoding = self.csv_encoding.value
-                
+
+                # Optimierung: Lade nur erste 500 Zeilen für Vorschau + Zähle Gesamtanzahl
                 with open(self.source_file, 'r', encoding=encoding, errors='replace') as f:
                     reader = csv.DictReader(f, delimiter=delimiter)
                     self.source_columns = reader.fieldnames or []
-                    self.source_data = list(reader)
-                
-                self.file_info_text.value = f"CSV: {len(self.source_data)} Zeilen, {len(self.source_columns)} Spalten"
-            
-            self.log(f"Geparst: {len(self.source_data)} Datensätze, {len(self.source_columns)} Spalten")
-            
+
+                    # Lade nur erste 500 Zeilen für Vorschau
+                    preview_data = []
+                    row_count = 0
+                    for row in reader:
+                        row_count += 1
+                        if row_count <= 500:
+                            preview_data.append(row)
+
+                    self.source_data = preview_data
+                    self.total_rows = row_count
+
+                if self.total_rows > 500:
+                    self.file_info_text.value = f"CSV: {self.total_rows} Zeilen, {len(self.source_columns)} Spalten (Vorschau: 500 Zeilen)"
+                else:
+                    self.file_info_text.value = f"CSV: {self.total_rows} Zeilen, {len(self.source_columns)} Spalten"
+
+            if self.total_rows > 10000:
+                self.log(f"⚠️ Große Datei: {self.total_rows} Datensätze - Import kann länger dauern")
+            else:
+                self.log(f"Geparst: {self.total_rows} Datensätze, {len(self.source_columns)} Spalten")
+
             self.update_preview_table()
             self.update_mapping_list()
             self.start_button.disabled = False
-            
+
         except Exception as e:
             self.log(f"FEHLER beim Parsen: {e}", error=True)
             self.file_info_text.value = f"Fehler: {e}"
             self.file_info_text.color = Colors.RED_400
-        
+
         self.page.update()
     
     def reload_file(self, e=None):
@@ -3348,11 +3380,11 @@ class ERPNextImporterApp:
         # Alle Spalten anzeigen
         display_cols = self.source_columns
         total_cols = len(self.source_columns)
-        total_rows = len(self.source_data)
 
-        # Info-Text aktualisieren
+        # Info-Text aktualisieren mit Gesamtanzahl
         if hasattr(self, 'preview_column_info'):
-            self.preview_column_info.value = f"{total_cols} Spalten | {total_rows} Zeilen (zeige max. 15)"
+            preview_count = min(15, len(self.source_data))
+            self.preview_column_info.value = f"{total_cols} Spalten | {self.total_rows} Zeilen gesamt (Vorschau: {preview_count})"
 
         # Spalten erstellen
         self.preview_table.columns = []
@@ -3940,16 +3972,35 @@ class ERPNextImporterApp:
         thread.start()
     
     def _run_import(self, dry_run: bool):
-        """Import-Thread"""
-        total = len(self.source_data)
+        """Import-Thread - Optimiert für große Dateien"""
         success = 0
         errors = 0
         skipped = 0
-        
+
         mode = self.import_mode.value
         import_type = self.import_type.value
-        
-        for i, row in enumerate(self.source_data):
+
+        # Generator-Funktion zum zeilenweisen Lesen
+        def read_data():
+            """Liest Daten zeilenweise aus der Quelle"""
+            ext = os.path.splitext(self.source_file)[1].lower()
+
+            if ext == ".xml":
+                # XML: Verwende bereits geladene Daten
+                for row in self.source_data:
+                    yield row
+            else:
+                # CSV: Lese komplett neu für den Import (Generator-Pattern)
+                delimiter = self.csv_delimiter.value
+                encoding = self.csv_encoding.value
+                with open(self.source_file, 'r', encoding=encoding, errors='replace') as f:
+                    reader = csv.DictReader(f, delimiter=delimiter)
+                    for row in reader:
+                        yield row
+
+        total = self.total_rows
+
+        for i, row in enumerate(read_data()):
             try:
                 # Daten transformieren
                 item_data = {}
@@ -4173,13 +4224,14 @@ class ERPNextImporterApp:
                     else:
                         self.log(f"[NO API] {identifier}")
                         success += 1
-                
-                # Progress
-                progress = (i + 1) / total
-                self.progress_bar.value = progress
-                self.progress_text.value = f"{i + 1}/{total} ({int(progress * 100)}%)"
-                self.page.update()
-                
+
+                # Progress - Optimiert: Update nur alle 10 Zeilen (bei großen Dateien)
+                if (i + 1) % 10 == 0 or (i + 1) == total:
+                    progress = (i + 1) / total
+                    self.progress_bar.value = progress
+                    self.progress_text.value = f"{i + 1}/{total} ({int(progress * 100)}%)"
+                    self.page.update()
+
             except Exception as ex:
                 errors += 1
                 self.log(f"Fehler Zeile {i+1}: {ex}", error=True)
@@ -4325,30 +4377,45 @@ class ERPNextImporterApp:
     
     def save_config(self, e=None):
         """Speichert Config"""
-        self.config.base_url = self.setting_url.value or ""
-        self.config.api_key = self.setting_api_key.value or ""
-        self.config.api_secret = self.setting_api_secret.value or ""
-        self.config.company = self.setting_company.value or ""
-        self.config.default_warehouse = self.setting_warehouse.value or ""
-        self.config.default_price_list = self.setting_price_list.value or ""
-        self.config.default_item_group = self.setting_item_group.value or ""
-        self.config.gemini_api_key = self.setting_gemini_api_key.value or ""
-        
+        # Stelle sicher, dass Config existiert
+        if not self.config:
+            self.config = ERPNextConfig()
+
+        if hasattr(self, 'setting_url') and self.setting_url is not None:
+            self.config.base_url = self.setting_url.value or ""
+        if hasattr(self, 'setting_api_key') and self.setting_api_key is not None:
+            self.config.api_key = self.setting_api_key.value or ""
+        if hasattr(self, 'setting_api_secret') and self.setting_api_secret is not None:
+            self.config.api_secret = self.setting_api_secret.value or ""
+        if hasattr(self, 'setting_company') and self.setting_company is not None:
+            self.config.company = self.setting_company.value or ""
+        if hasattr(self, 'setting_warehouse') and self.setting_warehouse is not None:
+            self.config.default_warehouse = self.setting_warehouse.value or ""
+        if hasattr(self, 'setting_price_list') and self.setting_price_list is not None:
+            self.config.default_price_list = self.setting_price_list.value or ""
+        if hasattr(self, 'setting_item_group') and self.setting_item_group is not None:
+            self.config.default_item_group = self.setting_item_group.value or ""
+        if hasattr(self, 'setting_gemini_api_key') and self.setting_gemini_api_key is not None:
+            self.config.gemini_api_key = self.setting_gemini_api_key.value or ""
+
         # Import-Einstellungen
-        try:
-            self.config.default_tax_rate = float(self.setting_tax_rate.value or "19.0")
-        except ValueError:
-            self.config.default_tax_rate = 19.0
-        
-        try:
-            self.config.batch_size = int(self.setting_batch_size.value or "50")
-        except ValueError:
-            self.config.batch_size = 50
-        
-        try:
-            self.config.request_timeout = int(self.setting_request_timeout.value or "30")
-        except ValueError:
-            self.config.request_timeout = 30
+        if hasattr(self, 'setting_tax_rate') and self.setting_tax_rate is not None:
+            try:
+                self.config.default_tax_rate = float(self.setting_tax_rate.value or "19.0")
+            except ValueError:
+                self.config.default_tax_rate = 19.0
+
+        if hasattr(self, 'setting_batch_size') and self.setting_batch_size is not None:
+            try:
+                self.config.batch_size = int(self.setting_batch_size.value or "50")
+            except ValueError:
+                self.config.batch_size = 50
+
+        if hasattr(self, 'setting_request_timeout') and self.setting_request_timeout is not None:
+            try:
+                self.config.request_timeout = int(self.setting_request_timeout.value or "30")
+            except ValueError:
+                self.config.request_timeout = 30
 
         config_data = {
             "base_url": self.config.base_url,
@@ -4382,57 +4449,82 @@ class ERPNextImporterApp:
         if not hasattr(self, 'setting_url'):
             return
 
-        self.setting_url.value = self.config.base_url or ""
-        self.setting_api_key.value = self.config.api_key or ""
-        self.setting_api_secret.value = self.config.api_secret or ""
-        self.setting_company.value = self.config.company or ""
-        self.setting_warehouse.value = self.config.default_warehouse or ""
-        self.setting_price_list.value = self.config.default_price_list or ""
-        self.setting_item_group.value = self.config.default_item_group or ""
+        # Sichere Config-Werte mit Fallback
+        if not self.config:
+            return
 
-        if hasattr(self, 'setting_gemini_api_key'):
-            self.setting_gemini_api_key.value = self.config.gemini_api_key or ""
-        
+        if hasattr(self, 'setting_url') and self.setting_url is not None:
+            self.setting_url.value = getattr(self.config, 'base_url', None) or ""
+        if hasattr(self, 'setting_api_key') and self.setting_api_key is not None:
+            self.setting_api_key.value = getattr(self.config, 'api_key', None) or ""
+        if hasattr(self, 'setting_api_secret') and self.setting_api_secret is not None:
+            self.setting_api_secret.value = getattr(self.config, 'api_secret', None) or ""
+        if hasattr(self, 'setting_company') and self.setting_company is not None:
+            self.setting_company.value = getattr(self.config, 'company', None) or ""
+        if hasattr(self, 'setting_warehouse') and self.setting_warehouse is not None:
+            self.setting_warehouse.value = getattr(self.config, 'default_warehouse', None) or ""
+        if hasattr(self, 'setting_price_list') and self.setting_price_list is not None:
+            self.setting_price_list.value = getattr(self.config, 'default_price_list', None) or ""
+        if hasattr(self, 'setting_item_group') and self.setting_item_group is not None:
+            self.setting_item_group.value = getattr(self.config, 'default_item_group', None) or ""
+
+        if hasattr(self, 'setting_gemini_api_key') and self.setting_gemini_api_key is not None:
+            self.setting_gemini_api_key.value = getattr(self.config, 'gemini_api_key', None) or ""
+
         # Import-Einstellungen
-        if hasattr(self, 'setting_tax_rate'):
-            self.setting_tax_rate.value = str(self.config.default_tax_rate) if self.config.default_tax_rate is not None else "19.0"
-        if hasattr(self, 'setting_batch_size'):
-            self.setting_batch_size.value = str(self.config.batch_size) if self.config.batch_size is not None else "50"
-        if hasattr(self, 'setting_request_timeout'):
-            self.setting_request_timeout.value = str(self.config.request_timeout) if self.config.request_timeout is not None else "30"
+        if hasattr(self, 'setting_tax_rate') and self.setting_tax_rate is not None:
+            tax_rate = getattr(self.config, 'default_tax_rate', None)
+            self.setting_tax_rate.value = str(tax_rate) if tax_rate is not None else "19.0"
+        if hasattr(self, 'setting_batch_size') and self.setting_batch_size is not None:
+            batch_size = getattr(self.config, 'batch_size', None)
+            self.setting_batch_size.value = str(batch_size) if batch_size is not None else "50"
+        if hasattr(self, 'setting_request_timeout') and self.setting_request_timeout is not None:
+            timeout = getattr(self.config, 'request_timeout', None)
+            self.setting_request_timeout.value = str(timeout) if timeout is not None else "30"
 
         # Gemini API initialisieren wenn Key vorhanden
-        if self.config.gemini_api_key:
-            self.gemini = GeminiAPI(self.config.gemini_api_key)
+        gemini_key = getattr(self.config, 'gemini_api_key', None)
+        if gemini_key:
+            self.gemini = GeminiAPI(gemini_key)
 
     def test_gemini_connection(self, e=None):
         """Testet Gemini API Verbindung"""
+        if not hasattr(self, 'setting_gemini_api_key') or self.setting_gemini_api_key is None:
+            return
+
         api_key = self.setting_gemini_api_key.value
         if not api_key:
-            self.gemini_status_icon.color = Colors.RED_400
-            self.gemini_status_text.value = "Kein API Key"
-            self.gemini_status_text.color = Colors.RED_400
+            if hasattr(self, 'gemini_status_icon') and self.gemini_status_icon is not None:
+                self.gemini_status_icon.color = Colors.RED_400
+            if hasattr(self, 'gemini_status_text') and self.gemini_status_text is not None:
+                self.gemini_status_text.value = "Kein API Key"
+                self.gemini_status_text.color = Colors.RED_400
             self.page.update()
             return
 
-        self.gemini_status_text.value = "Teste..."
+        if hasattr(self, 'gemini_status_text') and self.gemini_status_text is not None:
+            self.gemini_status_text.value = "Teste..."
         self.page.update()
 
         self.gemini = GeminiAPI(api_key)
         success, msg = self.gemini.test_connection()
 
         if success:
-            self.gemini_status_icon.color = Colors.GREEN_400
-            self.gemini_status_text.value = "Verbunden"
-            self.gemini_status_text.color = Colors.GREEN_400
+            if hasattr(self, 'gemini_status_icon') and self.gemini_status_icon is not None:
+                self.gemini_status_icon.color = Colors.GREEN_400
+            if hasattr(self, 'gemini_status_text') and self.gemini_status_text is not None:
+                self.gemini_status_text.value = "Verbunden"
+                self.gemini_status_text.color = Colors.GREEN_400
             self.log("Gemini API verbunden")
             # Speichere den Key
             self.config.gemini_api_key = api_key
             self.save_config()
         else:
-            self.gemini_status_icon.color = Colors.RED_400
-            self.gemini_status_text.value = "Fehler"
-            self.gemini_status_text.color = Colors.RED_400
+            if hasattr(self, 'gemini_status_icon') and self.gemini_status_icon is not None:
+                self.gemini_status_icon.color = Colors.RED_400
+            if hasattr(self, 'gemini_status_text') and self.gemini_status_text is not None:
+                self.gemini_status_text.value = "Fehler"
+                self.gemini_status_text.color = Colors.RED_400
             self.log(f"Gemini Fehler: {msg}", error=True)
             self.gemini = None
 
@@ -4442,20 +4534,24 @@ class ERPNextImporterApp:
         """Testet Verbindung"""
         self.save_config()
         self.api = ERPNextAPI(self.config)
-        
+
         success, msg = self.api.test_connection()
-        
+
         if success:
-            self.connection_icon.color = Colors.GREEN_400
-            self.connection_text.value = msg
-            self.connection_text.color = Colors.GREEN_400
+            if hasattr(self, 'connection_icon') and self.connection_icon is not None:
+                self.connection_icon.color = Colors.GREEN_400
+            if hasattr(self, 'connection_text') and self.connection_text is not None:
+                self.connection_text.value = msg
+                self.connection_text.color = Colors.GREEN_400
             self.log(f"Verbindung OK: {msg}")
         else:
-            self.connection_icon.color = Colors.RED_400
-            self.connection_text.value = "Fehler"
-            self.connection_text.color = Colors.RED_400
+            if hasattr(self, 'connection_icon') and self.connection_icon is not None:
+                self.connection_icon.color = Colors.RED_400
+            if hasattr(self, 'connection_text') and self.connection_text is not None:
+                self.connection_text.value = "Fehler"
+                self.connection_text.color = Colors.RED_400
             self.log(f"Verbindungsfehler: {msg}", error=True)
-        
+
         self.page.update()
     
     # ==================== LOGGING ====================
